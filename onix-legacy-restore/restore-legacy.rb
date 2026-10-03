@@ -46,6 +46,11 @@ APP_POD     = ENV['APP_POD']     || 'onix-dev-onix-legacy-api-acd-fcf48bcd6-wbrp
 
 PG_USER     = ENV['PG_USER']     || 'postgres'
 PG_DATABASE = ENV['PG_DATABASE'] || 'postgres'
+# Pod-local psql needs a password unless the pod's pg_hba.conf trusts local
+# connections — pass it via env rather than hardcoding here (e.g. read it
+# straight off the postgres pod itself: `kubectl exec -n NS POD -- env |
+# grep POSTGRES_PASSWORD`).
+PG_PASSWORD = ENV['PG_PASSWORD'] || ''
 
 INPUT_DIR   = ENV['INPUT_DIR']   || __dir__
 SQL_FILE    = ENV['SQL_FILE']    || Dir.glob(File.join(INPUT_DIR, '*.{sql,dump}')).first
@@ -72,7 +77,13 @@ def restore_database
   remote_path = "/tmp/#{File.basename(SQL_FILE)}"
 
   run(%(kubectl cp "#{SQL_FILE}" #{NAMESPACE}/#{PG_POD}:#{remote_path}))
-  run(%(kubectl exec -i -n #{NAMESPACE} #{PG_POD} -- psql -U #{PG_USER} -d #{PG_DATABASE} -f #{remote_path}))
+
+  psql_cmd = if PG_PASSWORD.empty?
+               %(kubectl exec -i -n #{NAMESPACE} #{PG_POD} -- psql -U #{PG_USER} -d #{PG_DATABASE} -f #{remote_path})
+             else
+               %(kubectl exec -i -n #{NAMESPACE} #{PG_POD} -- env PGPASSWORD=#{PG_PASSWORD} psql -U #{PG_USER} -d #{PG_DATABASE} -f #{remote_path})
+             end
+  run(psql_cmd)
 
   puts "Database restore complete."
 end

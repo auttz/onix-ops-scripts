@@ -134,7 +134,13 @@ s3 = Aws::S3::Client.new(
 )
 
 final_zip = File.basename(S3_FILE)
-local_zip = "#{TMP_DIR}/#{final_zip}"
+# Prefix with NAMESPACE, not just the backup's own basename — different
+# sites' daily backups can share the exact same filename pattern
+# (confirmed live: aldamex and sgl both produced "wp-backup-gke-
+# 20261003220009.zip"), so two restores running at the same time would
+# otherwise both write/resume into the same /tmp file and corrupt each
+# other's download.
+local_zip = "#{TMP_DIR}/#{NAMESPACE}-#{final_zip}"
 
 puts "[1/6] Downloading s3://#{S3_BUCKET}/#{S3_FILE} ..."
 
@@ -189,7 +195,7 @@ if downloaded != total_size
 end
 puts "Downloaded to #{local_zip}"
 
-unzip_dir = "#{TMP_DIR}/restore-unzip"
+unzip_dir = "#{TMP_DIR}/#{NAMESPACE}-restore-unzip"
 FileUtils.rm_rf(unzip_dir)
 FileUtils.mkdir_p(unzip_dir)
 run!("cd #{unzip_dir} && unzip -o #{local_zip}", "[2/6] Unpacking #{final_zip}")

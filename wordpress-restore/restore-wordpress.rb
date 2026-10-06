@@ -138,18 +138,31 @@ local_zip = "#{TMP_DIR}/#{final_zip}"
 
 puts "[1/6] Downloading s3://#{S3_BUCKET}/#{S3_FILE} ..."
 
-MAX_DOWNLOAD_ATTEMPTS = 3
+MAX_DOWNLOAD_ATTEMPTS = 5
 head = s3.head_object(bucket: S3_BUCKET, key: S3_FILE)
 total_size = head.content_length
 puts "Total size: #{(total_size / 1024.0 / 1024.0).round(1)} MB"
 
+# Resume from a partial file left by a prior stalled/interrupted attempt
+# instead of re-downloading everything from byte 0 — matters a lot once the
+# file is several GB on a slow/flaky link (confirmed live: a stall 46
+# minutes and 2.5GB in would otherwise mean starting completely over).
+downloaded = File.exist?(local_zip) ? File.size(local_zip) : 0
+if downloaded >= total_size
+  downloaded = 0
+  File.delete(local_zip)
+elsif downloaded > 0
+  puts "Resuming existing partial download at #{(downloaded / 1024.0 / 1024.0).round(1)} MB"
+end
+
 attempt = 0
 begin
   attempt += 1
-  downloaded = 0
   last_report = Time.now
-  File.open(local_zip, 'wb') do |file|
-    s3.get_object(bucket: S3_BUCKET, key: S3_FILE) do |chunk|
+  File.open(local_zip, downloaded > 0 ? 'ab' : 'wb') do |file|
+    get_params = { bucket: S3_BUCKET, key: S3_FILE }
+    get_params[:range] = "bytes=#{downloaded}-" if downloaded > 0
+    s3.get_object(get_params) do |chunk|
       file.write(chunk)
       downloaded += chunk.bytesize
       if Time.now - last_report >= 10
@@ -160,13 +173,18 @@ begin
     end
   end
 rescue => e
-  puts "WARN : download attempt #{attempt}/#{MAX_DOWNLOAD_ATTEMPTS} failed: #{e.class}: #{e.message}"
+  puts "WARN : download attempt #{attempt}/#{MAX_DOWNLOAD_ATTEMPTS} failed at #{(downloaded / 1024.0 / 1024.0).round(1)} MB: #{e.class}: #{e.message}"
   if attempt < MAX_DOWNLOAD_ATTEMPTS
     sleep 5
     retry
   end
   puts "ERROR: download failed after #{MAX_DOWNLOAD_ATTEMPTS} attempts"
   puts e.backtrace.join("\n")
+  exit 1
+end
+
+if downloaded != total_size
+  puts "ERROR: downloaded size (#{downloaded}) does not match expected total (#{total_size})"
   exit 1
 end
 puts "Downloaded to #{local_zip}"

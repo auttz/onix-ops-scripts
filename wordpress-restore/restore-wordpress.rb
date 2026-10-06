@@ -125,16 +125,47 @@ s3 = Aws::S3::Client.new(
   secret_access_key: S3_SECRET,
   region:            'auto',
   force_path_style:  false,
+  # No timeouts = a dropped connection hangs the download forever with zero
+  # feedback (confirmed live: stalled 36+ minutes at the same byte count
+  # with no error). http_read_timeout caps how long a single stalled read
+  # can block before raising, so a dead connection surfaces quickly instead.
+  http_open_timeout: 10,
+  http_read_timeout: 60,
 )
 
 final_zip = File.basename(S3_FILE)
 local_zip = "#{TMP_DIR}/#{final_zip}"
 
 puts "[1/6] Downloading s3://#{S3_BUCKET}/#{S3_FILE} ..."
+
+MAX_DOWNLOAD_ATTEMPTS = 3
+head = s3.head_object(bucket: S3_BUCKET, key: S3_FILE)
+total_size = head.content_length
+puts "Total size: #{(total_size / 1024.0 / 1024.0).round(1)} MB"
+
+attempt = 0
 begin
-  s3.get_object(bucket: S3_BUCKET, key: S3_FILE, response_target: local_zip)
+  attempt += 1
+  downloaded = 0
+  last_report = Time.now
+  File.open(local_zip, 'wb') do |file|
+    s3.get_object(bucket: S3_BUCKET, key: S3_FILE) do |chunk|
+      file.write(chunk)
+      downloaded += chunk.bytesize
+      if Time.now - last_report >= 10
+        pct = (downloaded.to_f / total_size * 100).round(1)
+        puts "  ... #{(downloaded / 1024.0 / 1024.0).round(1)} / #{(total_size / 1024.0 / 1024.0).round(1)} MB (#{pct}%)"
+        last_report = Time.now
+      end
+    end
+  end
 rescue => e
-  puts "ERROR: download failed: #{e.class}: #{e.message}"
+  puts "WARN : download attempt #{attempt}/#{MAX_DOWNLOAD_ATTEMPTS} failed: #{e.class}: #{e.message}"
+  if attempt < MAX_DOWNLOAD_ATTEMPTS
+    sleep 5
+    retry
+  end
+  puts "ERROR: download failed after #{MAX_DOWNLOAD_ATTEMPTS} attempts"
   puts e.backtrace.join("\n")
   exit 1
 end

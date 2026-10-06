@@ -235,7 +235,16 @@ run!("kubectl cp #{files_tar} -n #{NAMESPACE} #{WP_APP_POD}:/tmp/restore-files.t
 #       "Operation not permitted" way tar's direct extract does, since the
 #       exec user doesn't own that mount point
 extract_dir = "/tmp/restore-extract-#{Time.now.to_i}"
-extract_script = "set -e; mkdir -p #{extract_dir} && tar -xzf /tmp/restore-files.tar.gz -C #{extract_dir} && cp -rf #{extract_dir}/. #{APP_DATA_PATH}/ && rm -rf #{extract_dir} /tmp/restore-files.tar.gz"
+# Never restore wp-config.php from the backup — it hardcodes the DB host
+# (and user/name) of whatever environment the backup was taken on. Confirmed
+# live: a GCP-origin backup's wp-config.php pointed DB_HOST at
+# "<site>-production-mysql", a service name that doesn't exist on this
+# on-prem cluster (real one is "<site>-main-mysql"), which took the site's
+# WordPress pod down in an immediate DB-connect crash loop even though the
+# database itself restored correctly. The on-prem pod's own existing
+# wp-config.php (generated once from WORDPRESS_DATABASE_* env vars) is
+# already correct for this cluster, so it must survive the restore untouched.
+extract_script = "set -e; mkdir -p #{extract_dir} && tar -xzf /tmp/restore-files.tar.gz -C #{extract_dir} && rm -f #{extract_dir}/wp-config.php && cp -rf #{extract_dir}/. #{APP_DATA_PATH}/ && rm -rf #{extract_dir} /tmp/restore-files.tar.gz"
 run!("kubectl exec -i -n #{NAMESPACE} #{WP_APP_POD} -- bash -c #{Shellwords.escape(extract_script)}", "[6/6] Extracting WordPress files into #{APP_DATA_PATH}")
 
 # Local cleanup
